@@ -661,7 +661,7 @@
                   </button>
                 </div>
                 <p class="text-[11px] text-slate-500 dark:text-slate-400">
-                  Saved locally in your browser. If no key is provided, the built-in client-side AST/NLP analyzer processes your uploaded resume and JD directly.
+                  Saved locally in your browser. Required for live Gemini AI analysis (<span class="font-mono-code">gemini-4-argon</span>, <span class="font-mono-code">gemini-3.1-pro</span>, <span class="font-mono-code">gemini-3.8-flash</span>).
                 </p>
               </div>
             </div>
@@ -770,7 +770,7 @@
           <input id="modal-api-key-input" type="password" placeholder="AIzaSy..." class="w-full px-3 py-2 rounded-lg text-xs font-mono-code bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100" />
         </div>
         <p class="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-          Enter your Gemini API key for live cloud generation, or leave blank to use the built-in local AST/NLP Resume Shortlister engine on your uploaded resume and JD.
+          Enter your personal Gemini API key to analyze and shortlist your resume using only Gemini AI models (<span class="font-mono-code">gemini-4-argon</span>, <span class="font-mono-code">gemini-3.1-pro</span>, or <span class="font-mono-code">gemini-3.8-flash</span>).
         </p>
       </div>
       <div class="flex items-center justify-end gap-2 pt-2">
@@ -1158,7 +1158,7 @@
     }
 
     // =========================================================================
-    // 5. LIVE AI ANALYSIS + DYNAMIC CLIENT-SIDE RESUME/JD AST ANALYZER
+    // 5. LIVE GEMINI AI ANALYSIS (GEMINI-4-ARGON, GEMINI-3.1-PRO, GEMINI-3.8-FLASH)
     // =========================================================================
     function setLoadingProgress(stepTitle, pct) {
       const card = document.getElementById('ai-loading-card');
@@ -1212,9 +1212,19 @@
         showGlobalAlert(
           'error',
           'Job Description Required',
-          'Please paste or upload the target company Job Description in Step 2 so the AI can audit screening rejection risks and tailor your projects.'
+          'Please paste or upload the target company Job Description in Step 2 so Gemini AI can audit screening rejection risks and tailor your projects.'
         );
         switchMainTab('home');
+        return;
+      }
+
+      if (!APP_STATE.apiKey || !APP_STATE.apiKey.trim()) {
+        showGlobalAlert(
+          'error',
+          `Gemini API Key Required (${APP_STATE.selectedModel})`,
+          'No Gemini API key is configured. Please enter and save your personal Gemini API key to analyze your resume with Gemini AI.'
+        );
+        openApiKeyModal();
         return;
       }
 
@@ -1223,37 +1233,28 @@
       setAnalyzeButtonsDisabled(true);
 
       try {
-        setLoadingProgress('Step 1/4: Parsing uploaded resume structure, experience bullets & projects...', 20);
-        await new Promise(r => setTimeout(r, 250));
+        setLoadingProgress('Step 1/4: Preparing uploaded resume content & Job Description...', 20);
+        await new Promise(r => setTimeout(r, 150));
 
         const company = companyInput || inferCompanyFromJd(jdText) || 'Target Company';
         const role = roleInput || inferRoleFromJd(jdText) || 'Target Engineering Role';
 
-        setLoadingProgress(`Step 2/4: Auditing screening rejection risks against ${company} (${role}) JD using ${APP_STATE.selectedModel}...`, 50);
+        setLoadingProgress(`Step 2/4: Calling Gemini AI (${APP_STATE.selectedModel}) to audit rejection risks & rewrite resume...`, 55);
 
-        let analysis = null;
-        let usedCloudGemini = false;
-        let apiWarningMsg = '';
+        const analysis = await callGeminiShortlisterApi(
+          resumeRaw,
+          jdText,
+          company,
+          role,
+          APP_STATE.selectedModel,
+          APP_STATE.apiKey.trim()
+        );
 
-        if (APP_STATE.apiKey && APP_STATE.apiKey.trim().length > 8) {
-          try {
-            analysis = await callGeminiShortlisterApi(resumeRaw, jdText, company, role, APP_STATE.selectedModel, APP_STATE.apiKey.trim());
-            usedCloudGemini = true;
-          } catch (apiErr) {
-            console.warn('Gemini API error, falling back to local AST analyzer:', apiErr);
-            apiWarningMsg = `Gemini API note (${apiErr.message || ' request failed'}) — completed analysis using local AST/NLP Resume Engine.`;
-          }
-        }
-
-        setLoadingProgress('Step 3/4: Pruning irrelevant projects, injecting standout JD-aligned projects & step-by-step build guides...', 80);
-        await new Promise(r => setTimeout(r, 300));
-
-        if (!analysis) {
-          analysis = runLocalAstResumeShortlister(resumeRaw, jdText, company, role);
-        }
+        setLoadingProgress('Step 3/4: Formatting JD-aligned projects & step-by-step build guides...', 85);
+        await new Promise(r => setTimeout(r, 150));
 
         setLoadingProgress('Step 4/4: Generating 1:1 format-locked output & side-by-side diff...', 100);
-        await new Promise(r => setTimeout(r, 200));
+        await new Promise(r => setTimeout(r, 100));
 
         APP_STATE.analysisResult = analysis;
         APP_STATE.activeBlueprintProjIdx = 0;
@@ -1265,7 +1266,7 @@
           company: analysis.company,
           role: analysis.role,
           format: APP_STATE.formatMode,
-          model: usedCloudGemini ? `${APP_STATE.selectedModel} (Cloud API)` : `${APP_STATE.selectedModel} (Local AST)`,
+          model: APP_STATE.selectedModel,
           origScore: analysis.origScore,
           modScore: analysis.modScore,
           analysisSnapshot: JSON.parse(JSON.stringify(analysis)),
@@ -1292,30 +1293,29 @@
 
         document.getElementById('ai-loading-card').classList.add('hidden');
         switchMainTab('workspace');
-
-        if (apiWarningMsg) {
-          showGlobalAlert('warning', 'Analysis Completed via Local AST Engine', apiWarningMsg);
-        } else {
-          showToast(`Analysis complete! Screening match improved from ${analysis.origScore}% to ${analysis.modScore}%.`);
-        }
+        showToast(`Gemini AI (${APP_STATE.selectedModel}) analysis complete! Match: ${analysis.origScore}% → ${analysis.modScore}%.`);
       } catch (err) {
         document.getElementById('ai-loading-card').classList.add('hidden');
-        showGlobalAlert('error', 'Analysis Error', err.message || 'An unexpected error occurred while analyzing your resume.');
+        const exactError = err && err.message ? err.message : String(err);
+        showGlobalAlert(
+          'error',
+          `Gemini AI Error (${APP_STATE.selectedModel})`,
+          exactError
+        );
       } finally {
         APP_STATE.isAnalyzing = false;
         setAnalyzeButtonsDisabled(false);
       }
     }
 
-    // Call Gemini API with selected model + automatic model endpoint resolution
+    // Call Gemini API exclusively (no local AST fallback) and surface exact errors
     async function callGeminiShortlisterApi(resumeRaw, jdText, company, role, selectedModel, apiKey) {
-      // Try exact requested model ID first, then standard Gemini API model IDs so standard keys never 404
-      const candidateModels = Array.from(new Set([
-        selectedModel,
-        selectedModel === 'gemini-3.8-flash' ? 'gemini-2.5-flash' : 'gemini-2.5-pro',
-        'gemini-2.5-flash',
-        'gemini-2.0-flash'
-      ]));
+      const modelEndpointMap = {
+        'gemini-4-argon': ['gemini-4-argon', 'gemini-3.1-pro-preview', 'gemini-2.5-pro'],
+        'gemini-3.1-pro': ['gemini-3.1-pro', 'gemini-3.1-pro-preview', 'gemini-2.5-pro'],
+        'gemini-3.8-flash': ['gemini-3.8-flash', 'gemini-2.5-flash']
+      };
+      const candidateModels = modelEndpointMap[selectedModel] || [selectedModel];
 
       const systemPrompt = `You are "Resume Shortlister", an expert ATS & Principal Engineering Hiring Manager AI.
 Analyze the user's current Resume against the target Company ("${company}") and Role ("${role}") Job Description.
@@ -1396,11 +1396,15 @@ Return ONLY valid JSON matching this exact schema:
   "modifiedLatexCode": "Optional full LaTeX string if input was LaTeX"
 }`;
 
-      let lastError = null;
+      let last404Error = null;
+
       for (const modelId of candidateModels) {
+        const endpointUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:generateContent`;
+        const requestUrl = `${endpointUrl}?key=${encodeURIComponent(apiKey)}`;
+
+        let resp;
         try {
-          const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-          const resp = await fetch(url, {
+          resp = await fetch(requestUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1415,256 +1419,92 @@ Return ONLY valid JSON matching this exact schema:
               }
             })
           });
+        } catch (networkErr) {
+          const errName = networkErr && networkErr.name ? networkErr.name : 'NetworkError';
+          const errMsg = networkErr && networkErr.message ? networkErr.message : String(networkErr);
+          throw new Error(
+            `${errName}: ${errMsg}\nModel: ${selectedModel} (Endpoint: ${endpointUrl})\nCause: The browser could not reach generativelanguage.googleapis.com (blocked by iframe sandbox/CSP, network firewall, or browser extension).`
+          );
+        }
 
-          if (!resp.ok) {
-            const errData = await resp.json().catch(() => ({}));
-            const msg = errData?.error?.message || `HTTP ${resp.status}`;
-            lastError = new Error(msg);
-            // If model alias not found (404/400), try next fallback model
-            if (resp.status === 404 || resp.status === 400) continue;
-            throw lastError;
+        if (!resp.ok) {
+          const rawBody = await resp.text().catch(() => '');
+          let errJson = null;
+          try {
+            errJson = JSON.parse(rawBody);
+          } catch (e) {}
+
+          const apiStatus = errJson?.error?.status ? ` (${errJson.error.status})` : '';
+          const apiMessage = errJson?.error?.message || rawBody || resp.statusText || 'Request failed';
+          const formattedError = `HTTP ${resp.status}${apiStatus}: ${apiMessage} [Model: ${selectedModel} / Endpoint: ${modelId}]`;
+
+          // Only try the next mapped v1beta endpoint if this specific model alias returned 404 Not Found
+          if (resp.status === 404) {
+            last404Error = new Error(formattedError);
+            continue;
           }
 
-          const data = await resp.json();
-          const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-          const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-          if (!jsonMatch) throw new Error('Invalid JSON response from model');
-          const parsed = JSON.parse(jsonMatch[0]);
-          parsed.company = company;
-          parsed.role = role;
-          return normalizeAnalysisObject(parsed, resumeRaw, jdText, company, role);
-        } catch (err) {
-          lastError = err;
+          throw new Error(formattedError);
         }
+
+        const data = await resp.json().catch((parseErr) => {
+          throw new Error(`Failed to parse Gemini API JSON response (${selectedModel}): ${parseErr.message}`);
+        });
+
+        if (data?.promptFeedback?.blockReason) {
+          throw new Error(`Gemini API blocked prompt (${selectedModel}): ${data.promptFeedback.blockReason}`);
+        }
+
+        const candidate = data?.candidates?.[0];
+        if (!candidate) {
+          throw new Error(`Gemini API returned no candidates (${selectedModel}): ${JSON.stringify(data)}`);
+        }
+
+        const rawText = candidate?.content?.parts?.[0]?.text || '';
+        const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) {
+          throw new Error(`Gemini API response did not contain valid JSON (${selectedModel}). Raw output: ${rawText.slice(0, 300)}`);
+        }
+
+        let parsed;
+        try {
+          parsed = JSON.parse(jsonMatch[0]);
+        } catch (jsonErr) {
+          throw new Error(`Invalid JSON syntax from ${selectedModel}: ${jsonErr.message}`);
+        }
+
+        return normalizeAnalysisObject(parsed, company, role);
       }
-      throw lastError || new Error('Gemini API request failed');
+
+      throw last404Error || new Error(`Gemini API request failed for model ${selectedModel}.`);
     }
 
-    // Dynamic Client-Side AST/NLP Resume + JD Analyzer (Parses the user's actual uploaded resume & JD!)
-    function runLocalAstResumeShortlister(resumeRaw, jdText, company, role) {
-      const isLatex = resumeRaw.includes('\\documentclass') || resumeRaw.includes('\\begin{document}');
-      const cleanText = isLatex ? stripLatexToPlainText(resumeRaw) : resumeRaw;
-      const lines = cleanText.split('\n').map(l => l.trim()).filter(Boolean);
-
-      // 1. Extract Candidate Name & Contact from user's uploaded resume
-      const candidateName = extractCandidateName(lines, resumeRaw);
-      const candidateContact = extractCandidateContact(lines);
-      const educationText = extractSectionContent(lines, ['education', 'academic', 'university', 'degree']) || 'Education section from uploaded resume';
-      const origSkillsText = extractSectionContent(lines, ['skills', 'technologies', 'technical skills', 'tools', 'competencies']) || extractDetectedSkillsFromText(cleanText).join(', ') || 'General Programming';
-
-      // 2. Extract JD Keywords & Missing Keywords
-      const jdKeywords = extractKeywordsFromText(jdText);
-      const resumeKeywords = extractKeywordsFromText(cleanText);
-      const matchedKeywords = jdKeywords.filter(k => resumeKeywords.map(x => x.toLowerCase()).includes(k.toLowerCase()));
-      const missingKeywords = jdKeywords.filter(k => !resumeKeywords.map(x => x.toLowerCase()).includes(k.toLowerCase()));
-
-      const origScore = jdKeywords.length > 0
-        ? Math.max(18, Math.min(68, Math.round((matchedKeywords.length / jdKeywords.length) * 100)))
-        : 42;
-      const modScore = Math.min(98, Math.max(91, origScore + 48));
-
-      // 3. Parse Experience & Projects from user's uploaded resume
-      const parsedExperience = parseResumeExperienceBlocks(lines, jdKeywords, role);
-      const parsedProjects = parseResumeProjectBlocks(lines, jdKeywords);
-
-      // Identify irrelevant/low-match projects to prune
-      const removedProjects = parsedProjects.removed.length > 0
-        ? parsedProjects.removed
-        : [{
-            title: 'Unaligned / Generic Resume Bullets & Non-Core Coursework',
-            tech: origSkillsText.split(',').slice(0, 3).join(', ') || 'Legacy Stack',
-            origBullets: ['Generic project descriptions lacking target JD keywords and measurable production scale.'],
-            rejectionReason: `Does not demonstrate the core technical competencies required for ${role} at ${company} (${missingKeywords.slice(0, 4).join(', ') || 'role-specific architecture'}).`
-          }];
-
-      // Generate standout JD-aligned projects (modifying kept projects + adding a flagship JD project)
-      const addedOrModifiedProjects = buildStandoutProjectsForJd(parsedProjects.kept, jdKeywords, missingKeywords, company, role, jdText);
-
-      // Build tailored skills string combining matched + missing JD keywords
-      const combinedSkills = Array.from(new Set([...jdKeywords, ...resumeKeywords])).slice(0, 14);
-      const skillsMod = combinedSkills.length > 0
-        ? combinedSkills.join(', ')
-        : `${origSkillsText}, Production Architecture, Automated Testing, CI/CD`;
-
-      // Build specific Rejection Reasons based on the actual gap between Resume and JD
-      const reasons = [];
-      if (missingKeywords.length > 0) {
-        reasons.push({
-          severity: 'CRITICAL BLOCKER',
-          title: `Missing ${missingKeywords.length} Core JD Keywords Required by ${company} Screening Filters`,
-          detail: `Your uploaded resume is missing critical keywords explicitly required in the Job Description: ${missingKeywords.slice(0, 8).join(', ')}. Automated ATS rankers filter out resumes below a 75% keyword match threshold.`
-        });
-      }
-      reasons.push({
-        severity: 'HIGH RISK',
-        title: `Project Portfolio Lacks Direct Alignment with "${role}"`,
-        detail: `Hiring managers at ${company} scan your Projects section for proof that you have built systems matching their stack (${jdKeywords.slice(0, 5).join(', ') || role}). Low-relevance projects (${removedProjects.map(p => p.title).join('; ')}) dilute your engineering signal and were pruned.`
-      });
-      reasons.push({
-        severity: 'HIGH RISK',
-        title: 'Experience & Project Bullets Lack Quantified Production Metrics (Latency, Throughput, Scale)',
-        detail: 'Several bullets in your uploaded resume describe tasks ("worked on", "built", "helped") rather than measurable engineering outcomes. We rewrote your bullets with concrete performance, reliability, and architectural impact.'
-      });
-
-      const analysisObj = {
-        company,
-        role,
+    function normalizeAnalysisObject(parsed, company, role) {
+      const origScore = typeof parsed?.origScore === 'number' ? parsed.origScore : 40;
+      const modScore = typeof parsed?.modScore === 'number' ? parsed.modScore : 92;
+      return {
+        company: parsed?.company || company,
+        role: parsed?.role || role,
         origScore,
         modScore,
+        modifiedLatexCode: parsed?.modifiedLatexCode || '',
         candidate: {
-          name: candidateName,
-          contact: candidateContact,
-          education: educationText,
-          skillsOrig: origSkillsText,
-          skillsMod: skillsMod,
-          experience: parsedExperience,
-          removedProjects: removedProjects,
-          addedOrModifiedProjects: addedOrModifiedProjects
+          name: parsed?.candidate?.name || 'Candidate',
+          contact: parsed?.candidate?.contact || '',
+          education: parsed?.candidate?.education || '',
+          skillsOrig: parsed?.candidate?.skillsOrig || '',
+          skillsMod: parsed?.candidate?.skillsMod || '',
+          experience: Array.isArray(parsed?.candidate?.experience) ? parsed.candidate.experience : [],
+          removedProjects: Array.isArray(parsed?.candidate?.removedProjects) ? parsed.candidate.removedProjects : [],
+          addedOrModifiedProjects: Array.isArray(parsed?.candidate?.addedOrModifiedProjects) ? parsed.candidate.addedOrModifiedProjects : []
         },
         rejectionAudit: {
-          scorecards: [
-            { label: 'JD Keyword Match', orig: `${origScore}%`, mod: `${modScore}%`, status: `+${modScore - origScore}% Boost` },
-            { label: 'Missing JD Skills', orig: `${missingKeywords.length} Gaps`, mod: '0 Gaps', status: 'All Injected' },
-            { label: 'Project Alignment', orig: 'Low Signal', mod: 'Top 3% Match', status: `${removedProjects.length} Pruned / ${addedOrModifiedProjects.length} Ready` },
-            { label: 'Output Format', orig: `.${APP_STATE.formatMode.toUpperCase()}`, mod: `.${APP_STATE.formatMode.toUpperCase()}`, status: '1:1 Locked' }
+          scorecards: Array.isArray(parsed?.rejectionAudit?.scorecards) ? parsed.rejectionAudit.scorecards : [
+            { label: 'JD Keyword Match', orig: `${origScore}%`, mod: `${modScore}%`, status: 'Optimized' }
           ],
-          reasons: reasons
+          reasons: Array.isArray(parsed?.rejectionAudit?.reasons) ? parsed.rejectionAudit.reasons : []
         }
       };
-
-      return analysisObj;
-    }
-
-    function normalizeAnalysisObject(parsed, resumeRaw, jdText, company, role) {
-      const fallback = runLocalAstResumeShortlister(resumeRaw, jdText, company, role);
-      return {
-        company: parsed.company || company,
-        role: parsed.role || role,
-        origScore: typeof parsed.origScore === 'number' ? parsed.origScore : fallback.origScore,
-        modScore: typeof parsed.modScore === 'number' ? parsed.modScore : fallback.modScore,
-        modifiedLatexCode: parsed.modifiedLatexCode || '',
-        candidate: {
-          name: parsed?.candidate?.name || fallback.candidate.name,
-          contact: parsed?.candidate?.contact || fallback.candidate.contact,
-          education: parsed?.candidate?.education || fallback.candidate.education,
-          skillsOrig: parsed?.candidate?.skillsOrig || fallback.candidate.skillsOrig,
-          skillsMod: parsed?.candidate?.skillsMod || fallback.candidate.skillsMod,
-          experience: Array.isArray(parsed?.candidate?.experience) && parsed.candidate.experience.length > 0
-            ? parsed.candidate.experience
-            : fallback.candidate.experience,
-          removedProjects: Array.isArray(parsed?.candidate?.removedProjects) && parsed.candidate.removedProjects.length > 0
-            ? parsed.candidate.removedProjects
-            : fallback.candidate.removedProjects,
-          addedOrModifiedProjects: Array.isArray(parsed?.candidate?.addedOrModifiedProjects) && parsed.candidate.addedOrModifiedProjects.length > 0
-            ? parsed.candidate.addedOrModifiedProjects
-            : fallback.candidate.addedOrModifiedProjects
-        },
-        rejectionAudit: {
-          scorecards: Array.isArray(parsed?.rejectionAudit?.scorecards) && parsed.rejectionAudit.scorecards.length > 0
-            ? parsed.rejectionAudit.scorecards
-            : fallback.rejectionAudit.scorecards,
-          reasons: Array.isArray(parsed?.rejectionAudit?.reasons) && parsed.rejectionAudit.reasons.length > 0
-            ? parsed.rejectionAudit.reasons
-            : fallback.rejectionAudit.reasons
-        }
-      };
-    }
-
-    // Helper parsers for user's uploaded resume & JD
-    function stripLatexToPlainText(tex) {
-      let body = tex;
-      const beginDoc = tex.indexOf('\\begin{document}');
-      const endDoc = tex.indexOf('\\end{document}');
-      if (beginDoc !== -1) {
-        body = tex.slice(beginDoc + 16, endDoc !== -1 ? endDoc : tex.length);
-      }
-      return body
-        .replace(/%.*$/gm, '')
-        .replace(/\\section\*?\{([^}]*)\}/gi, '\n\n$1\n')
-        .replace(/\\subsection\*?\{([^}]*)\}/gi, '\n$1\n')
-        .replace(/\\item\s+/gi, '• ')
-        .replace(/\\textbf\{([^}]*)\}/gi, '$1')
-        .replace(/\\textit\{([^}]*)\}/gi, '$1')
-        .replace(/\\texttt\{([^}]*)\}/gi, '$1')
-        .replace(/\\emph\{([^}]*)\}/gi, '$1')
-        .replace(/\\href\{[^}]*\}\{([^}]*)\}/gi, '$1')
-        .replace(/\\[a-zA-Z]+\*?(\[[^\]]*\])?(\{[^}]*\})?/g, ' ')
-        .replace(/[{}]/g, '')
-        .replace(/\n{3,}/g, '\n\n')
-        .trim();
-    }
-
-    function extractCandidateName(lines, rawText) {
-      const texNameMatch = rawText.match(/\\(?:LARGE|Huge|huge|Large)\s*(?:\\textbf\{([^}]+)\}|\{\\bf\s+([^}]+)\}|([^\\\\\n]+))/i);
-      if (texNameMatch) {
-        const n = (texNameMatch[1] || texNameMatch[2] || texNameMatch[3] || '').trim();
-        if (n.length > 1 && n.length < 50) return n;
-      }
-      for (let i = 0; i < Math.min(5, lines.length); i++) {
-        const l = lines[i].replace(/[•|]/g, ' ').trim();
-        if (l.length >= 3 && l.length <= 45 && !l.includes('@') && !/^(resume|curriculum|education|experience|skills|projects)/i.test(l)) {
-          return l;
-        }
-      }
-      return 'Candidate Name';
-    }
-
-    function extractCandidateContact(lines) {
-      const contactParts = [];
-      for (let i = 0; i < Math.min(10, lines.length); i++) {
-        const l = lines[i];
-        if (l.includes('@') || /\d{3}[-.\s)]*\d{3}[-.\s]*\d{4}/.test(l) || /linkedin\.com|github\.com/i.test(l)) {
-          contactParts.push(l);
-        }
-      }
-      return contactParts.slice(0, 2).join(' • ') || 'Contact details from uploaded resume';
-    }
-
-    function extractSectionContent(lines, sectionKeywords) {
-      const headerRegex = new RegExp(`^(${sectionKeywords.join('|')})\\b`, 'i');
-      const stopHeaders = /^(education|experience|work experience|employment|projects|personal projects|academic projects|skills|technical skills|certifications|achievements|publications|awards|summary|objective)\b/i;
-
-      let capturing = false;
-      const collected = [];
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].replace(/[:\-—]+$/, '').trim();
-        if (!capturing && line.length < 42 && headerRegex.test(line)) {
-          capturing = true;
-          continue;
-        }
-        if (capturing) {
-          if (line.length < 35 && stopHeaders.test(line) && !headerRegex.test(line) && collected.length > 0) {
-            break;
-          }
-          collected.push(lines[i]);
-          if (collected.length >= 6) break;
-        }
-      }
-      return collected.join(' • ').trim();
-    }
-
-    function extractKeywordsFromText(text) {
-      const techCatalog = [
-        'Python', 'Java', 'Go', 'Golang', 'Rust', 'C++', 'C#', 'TypeScript', 'JavaScript', 'SQL',
-        'React', 'Next.js', 'Angular', 'Vue', 'Node.js', 'Express', 'FastAPI', 'Django', 'Spring Boot', 'Flask',
-        'PostgreSQL', 'MySQL', 'MongoDB', 'Redis', 'Cassandra', 'DynamoDB', 'Elasticsearch', 'SQLite',
-        'Kafka', 'RabbitMQ', 'gRPC', 'GraphQL', 'REST API', 'WebSockets', 'Microservices', 'Distributed Systems',
-        'AWS', 'GCP', 'Azure', 'Docker', 'Kubernetes', 'Terraform', 'CI/CD', 'GitHub Actions', 'Jenkins', 'Linux',
-        'PyTorch', 'TensorFlow', 'LLM', 'RAG', 'LangChain', 'vLLM', 'OpenTelemetry', 'Prometheus', 'Grafana',
-        'Tailwind CSS', 'HTML5', 'CSS3', 'Machine Learning', 'Data Structures', 'System Design', 'OAuth2', 'JWT'
-      ];
-      const found = [];
-      const lower = String(text || '').toLowerCase();
-      techCatalog.forEach(kw => {
-        const escaped = kw.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const re = new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i');
-        if (re.test(lower)) found.push(kw);
-      });
-      return found;
-    }
-
-    function extractDetectedSkillsFromText(text) {
-      return extractKeywordsFromText(text);
     }
 
     function inferCompanyFromJd(jdText) {
@@ -1677,204 +1517,6 @@ Return ONLY valid JSON matching this exact schema:
       const m = jdText.match(/(?:Role|Position|Title|Job Title)\s*[:\-]\s*([^\n\r]{3,55})/i)
         || jdText.match(/((?:Senior|Staff|Lead|Principal|Junior|Full[- ]?Stack|Backend|Frontend|Software|AI|Machine Learning|Data|DevOps|Cloud)\s+[A-Za-z /\-]+(?:Engineer|Developer|Architect|Scientist))/i);
       return m ? m[1].trim() : '';
-    }
-
-    function parseResumeExperienceBlocks(lines, jdKeywords, role) {
-      const expRaw = extractSectionLinesList(lines, ['experience', 'work experience', 'employment', 'professional experience', 'internships']);
-      const bullets = expRaw.filter(l => l.startsWith('•') || l.startsWith('-') || l.length > 35).map(l => l.replace(/^[•\-*]\s*/, '').trim());
-      const topJdTech = jdKeywords.slice(0, 4).join(', ') || 'scalable production architecture';
-
-      if (bullets.length > 0) {
-        const origSlice = bullets.slice(0, 4);
-        const modSlice = origSlice.map((b, i) => {
-          const clean = b.replace(/\.$/, '');
-          if (i === 0) return `${clean} — re-architected using ${topJdTech} to improve throughput by 48% and sustain 99.98% production reliability.`;
-          if (i === 1) return `${clean} — optimized query execution paths, caching, and automated CI/CD observability, cutting P99 latency by 52%.`;
-          return `${clean} — aligned with ${role} engineering standards, automated integration testing, and zero-downtime deployment.`;
-        });
-        return [{
-          company: 'Experience from Uploaded Resume',
-          role: role,
-          period: 'Current / Recent',
-          origBullets: origSlice,
-          modBullets: modSlice
-        }];
-      }
-
-      // If resume had no explicit experience section, use general resume lines
-      const fallbackOrig = lines.slice(2, 6).map(l => l.replace(/^[•\-*]\s*/, ''));
-      return [{
-        company: 'Core Experience & Engineering Highlights',
-        role: role,
-        period: 'Recent',
-        origBullets: fallbackOrig.length > 0 ? fallbackOrig : ['Built software modules and collaborated on application features.'],
-        modBullets: [
-          `Engineered production-grade services utilizing ${topJdTech}, improving system throughput and fault tolerance under peak load.`,
-          `Implemented automated testing, telemetry, and CI/CD pipelines aligned with ${role} requirements.`
-        ]
-      }];
-    }
-
-    function parseResumeProjectBlocks(lines, jdKeywords) {
-      const projLines = extractSectionLinesList(lines, ['projects', 'personal projects', 'academic projects', 'key projects', 'selected projects']);
-      const jdSet = new Set(jdKeywords.map(k => k.toLowerCase()));
-
-      const blocks = [];
-      let current = null;
-      projLines.forEach(line => {
-        const isBullet = /^[•\-*]/.test(line);
-        if (!isBullet && line.length < 85 && (!current || current.bullets.length > 0)) {
-          if (current) blocks.push(current);
-          current = { title: line, tech: extractKeywordsFromText(line).join(', ') || 'General Stack', bullets: [] };
-        } else {
-          if (!current) current = { title: 'Existing Resume Project', tech: 'Existing Stack', bullets: [] };
-          current.bullets.push(line.replace(/^[•\-*]\s*/, '').trim());
-        }
-      });
-      if (current) blocks.push(current);
-
-      // Score each parsed project against the JD
-      blocks.forEach(b => {
-        const fullText = `${b.title} ${b.tech} ${b.bullets.join(' ')}`;
-        const kws = extractKeywordsFromText(fullText);
-        b.tech = kws.join(', ') || b.tech;
-        const overlap = kws.filter(k => jdSet.has(k.toLowerCase())).length;
-        b.jdOverlap = overlap;
-      });
-
-      blocks.sort((a, b) => a.jdOverlap - b.jdOverlap);
-      const removed = [];
-      const kept = [];
-
-      if (blocks.length >= 2) {
-        const weakest = blocks[0];
-        removed.push({
-          title: weakest.title,
-          tech: weakest.tech,
-          origBullets: weakest.bullets.length > 0 ? weakest.bullets : [weakest.title],
-          rejectionReason: `Low keyword overlap (${weakest.jdOverlap} JD matches) compared to target role requirements. Pruned to free space for high-signal JD projects.`
-        });
-        kept.push(...blocks.slice(1));
-      } else if (blocks.length === 1 && blocks[0].jdOverlap === 0 && jdKeywords.length > 0) {
-        removed.push({
-          title: blocks[0].title,
-          tech: blocks[0].tech,
-          origBullets: blocks[0].bullets.length > 0 ? blocks[0].bullets : [blocks[0].title],
-          rejectionReason: `Does not include target JD technologies (${jdKeywords.slice(0, 4).join(', ')}). Replaced with role-tailored architecture.`
-        });
-      } else if (blocks.length === 1) {
-        kept.push(blocks[0]);
-      }
-
-      return { removed, kept };
-    }
-
-    function extractSectionLinesList(lines, headers) {
-      const headerRegex = new RegExp(`^(${headers.join('|')})\\b`, 'i');
-      const stopHeaders = /^(education|experience|work experience|employment|projects|personal projects|academic projects|skills|technical skills|certifications|achievements|publications|awards|summary|objective)\b/i;
-      let capturing = false;
-      const out = [];
-      for (let i = 0; i < lines.length; i++) {
-        const clean = lines[i].replace(/[:\-—]+$/, '').trim();
-        if (!capturing && clean.length < 45 && headerRegex.test(clean)) {
-          capturing = true;
-          continue;
-        }
-        if (capturing) {
-          if (clean.length < 38 && stopHeaders.test(clean) && !headerRegex.test(clean) && out.length > 0) {
-            break;
-          }
-          out.push(lines[i]);
-        }
-      }
-      return out;
-    }
-
-    function buildStandoutProjectsForJd(keptProjects, jdKeywords, missingKeywords, company, role, jdText) {
-      const primaryTechs = jdKeywords.slice(0, 5);
-      const techString = primaryTechs.length > 0 ? primaryTechs.join(', ') : 'TypeScript, Python, PostgreSQL, Docker, CI/CD';
-      const firstTech = primaryTechs[0] || 'Python';
-      const secondTech = primaryTechs[1] || 'PostgreSQL';
-      const thirdTech = primaryTechs[2] || 'Docker';
-
-      const resultProjects = [];
-
-      // 1. Add a flagship JD-tailored standout project
-      resultProjects.push({
-        id: 'proj_jd_flagship',
-        actionType: 'ADDED NEW STANDOUT PROJECT',
-        title: `${company} ${role} — Production-Grade ${firstTech} & ${secondTech} Architecture`,
-        tech: techString,
-        bullets: [
-          `Architected and deployed a high-reliability ${role.toLowerCase()} system using ${techString}, engineered specifically around ${company}'s production requirements.`,
-          `Implemented automated fault-isolation, caching, and schema validation in ${firstTech} and ${secondTech}, achieving sub-50ms P99 latency under concurrent load.`,
-          `Built end-to-end integration tests, containerization (${thirdTech}), and telemetry dashboards to verify SLA compliance.`
-        ],
-        whyItStandsOut: `Directly incorporates the exact technical stack (${techString}) and engineering responsibilities sought by ${company} for the ${role} screening round.`,
-        buildGuide: {
-          estimatedTime: '2 Weekend Sprints (~10–14 hours)',
-          architectureSummary: `Client / API Layer (${firstTech}) → Core Business & Validation Engine → Persistence & Caching Layer (${secondTech}) → Containerized CI/CD & Telemetry (${thirdTech}).`,
-          steps: [
-            {
-              step: `Step 1: Initialize Repository & ${firstTech} Core Service Architecture`,
-              detail: `Set up a clean, modular repository with strict configuration management, structured logging, and ${secondTech} schema migrations.`,
-              code: `mkdir -p ${company.toLowerCase().replace(/[^a-z0-9]/g, '-')}-project && cd $_\ngit init\n# Initialize ${firstTech} service & ${thirdTech} environment\n# Configure healthcheck endpoint GET /healthz and structured JSON logging`
-            },
-            {
-              step: `Step 2: Implement Core ${role} Domain Logic & ${secondTech} Data Layer`,
-              detail: `Build the core data models, idempotent API handlers, and indexed queries using ${techString}.`,
-              code: `// Core domain handler with input validation, error handling & telemetry\n// Ensure all critical state transitions are atomic and covered by integration tests`
-            },
-            {
-              step: `Step 3: Add Load Benchmarking, ${thirdTech} Packaging & README Architecture Diagram`,
-              detail: `Containerize the application, run a concurrency benchmark to record real P95/P99 latency numbers that match your resume bullet, and document the architecture in README.md.`,
-              code: `# Run load test & capture P99 latency metrics for your README\ndocker compose up --build -d`
-            }
-          ],
-          interviewDefense: [
-            `Q: Why did you choose ${techString} for this architecture? → A: It provides strong reliability, clear separation of concerns, and predictable performance under concurrent load matching ${company}'s production environment.`,
-            `Q: How did you validate the performance metrics on your resume? → A: By running reproducible load benchmarks against the containerized ${secondTech} backing store and measuring P95/P99 response times.`
-          ]
-        }
-      });
-
-      // 2. If user had an existing project in their resume, upgrade/modify it to align with the JD
-      if (keptProjects.length > 0) {
-        const kp = keptProjects[0];
-        const upgradedTech = Array.from(new Set([...kp.tech.split(',').map(s => s.trim()).filter(Boolean), ...missingKeywords.slice(0, 3)])).join(', ');
-        resultProjects.push({
-          id: 'proj_jd_modified',
-          actionType: 'MODIFIED EXISTING RESUME PROJECT',
-          title: `${kp.title} (Upgraded for ${role})`,
-          tech: upgradedTech || techString,
-          bullets: [
-            ...(kp.bullets.slice(0, 1).map(b => `${b.replace(/\.$/, '')} — enhanced with ${missingKeywords.slice(0, 2).join(' & ') || firstTech} for production scalability.`)),
-            `Refactored data access, error handling, and automated test coverage to meet ${company} engineering screening standards.`
-          ],
-          whyItStandsOut: `Preserves your existing project foundation (${kp.title}) while injecting the missing JD technologies (${missingKeywords.slice(0, 3).join(', ') || techString}) so it passes technical screening.`,
-          buildGuide: {
-            estimatedTime: '1 Weekend (~6 hours)',
-            architectureSummary: `Existing Project (${kp.title}) → Refactored Module Layer (${upgradedTech}) → Automated Test & Benchmark Suite.`,
-            steps: [
-              {
-                step: `Step 1: Upgrade ${kp.title} with ${missingKeywords.slice(0, 2).join(' & ') || firstTech}`,
-                detail: `Integrate ${missingKeywords.slice(0, 2).join(' and ') || firstTech} into your existing codebase and add automated tests.`,
-                code: `# Checkout a feature branch in your existing project repo\ngit checkout -b feat/jd-alignment-upgrade`
-              },
-              {
-                step: 'Step 2: Document Benchmarks & Update GitHub README',
-                detail: 'Add an Architecture Overview section and benchmark results to your repository README so interviewers reviewing your GitHub link see immediate proof.',
-                code: `# Update README.md with architecture diagram, tech stack (${upgradedTech}), and test results`
-              }
-            ],
-            interviewDefense: [
-              `Q: What was the most challenging part of upgrading ${kp.title}? → A: Refactoring the original module boundaries to support ${missingKeywords[0] || firstTech} cleanly without breaking existing functionality.`
-            ]
-          }
-        });
-      }
-
-      return resultProjects;
     }
 
     // =========================================================================
@@ -2609,12 +2251,17 @@ ${projLatex}
       if (type === 'error') {
         banner.className = 'rounded-lg border border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-200 p-3.5 flex items-start justify-between gap-3';
         iconEl.innerHTML = '⚠️';
+        msgEl.className = 'leading-relaxed whitespace-pre-wrap font-mono-code text-[11px] sm:text-xs break-words';
       } else {
         banner.className = 'rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-200 p-3.5 flex items-start justify-between gap-3';
         iconEl.innerHTML = 'ℹ️';
+        msgEl.className = 'leading-relaxed whitespace-pre-wrap text-xs break-words';
       }
       titleEl.textContent = title;
       msgEl.textContent = message;
+      try {
+        banner.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      } catch (e) {}
     }
 
     function hideGlobalAlert() {
@@ -2834,7 +2481,7 @@ ${projLatex}
       } else {
         dot.className = 'w-2 h-2 rounded-full bg-amber-400';
         lbl.textContent = 'API Key';
-        showToast('API key cleared. Using built-in local AST analyzer.');
+        showToast('Gemini API key cleared. Please set a valid API key before analyzing.');
       }
     }
 
